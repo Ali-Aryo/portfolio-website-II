@@ -25,3 +25,6 @@ dist-ssr
 
 # Personal
 /stuff
+
+# AI
+/.claude

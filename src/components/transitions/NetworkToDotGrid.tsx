@@ -7,13 +7,23 @@ import NeuralNetwork, {
 
 gsap.registerPlugin(ScrollTrigger)
 
-// Timeline phases (fractions of the full 200%-scroll scrub):
-// 0..HERO_EXIT      hero content slides up / background fades out, while
-//                   the network glides from its resting spot to center
-// HERO_EXIT..MORPH_END  network explodes and reforms into the grid (pinned)
-// MORPH_END..1      next section slides in under the finished grid
-const HERO_EXIT = 0.15
-const MORPH_END = 0.5
+// Scroll geometry, measured in viewport-heights of scrolling:
+//   0 .. EXIT_VH           hero content slides up / background fades, while
+//                          the network glides from its resting spot to center
+//   EXIT_VH .. MORPH_END_VH  network explodes and reforms into the grid
+//   PIN_VH                 the hero unpins here — deliberately BEFORE the
+//                          morph ends, so the last dots are still raining in
+//                          while the next section starts sliding up (keeps
+//                          the settled-grid lull short)
+//   .. PIN_VH + 1          section covers the grid; crossfade in the last 5%
+// The pin is generous so a normal-speed scroll can't blow past the morph.
+const EXIT_VH = 0.3
+const PIN_VH = 2  //animation speed
+const MORPH_END_VH = 2.4 //make this greater than PIN_VH
+const TOTAL_VH = PIN_VH + 1
+// Same phases as fractions of the scrub timeline.
+const HERO_EXIT = EXIT_VH / TOTAL_VH
+const MORPH_END = MORPH_END_VH / TOTAL_VH
 /** Resting horizontal center of the network, as a fraction of the viewport. */
 const NETWORK_REST_X = 0.65
 
@@ -56,18 +66,19 @@ export default function NetworkToDotGrid({
             // off to it, so the two grids never show at once.
             if (reveal) gsap.set(reveal, { opacity: 0 })
 
-            // Scrub spans the pinned viewport (morph 0 -> 1) plus the next
-            // viewport where the section slides in under the finished grid.
-            // Created before the pin with a higher refreshPriority so its
-            // scroll range is measured WITHOUT the pin's 100vh spacing —
-            // otherwise the range shifts to 900..2700 and can never finish.
+            // Scrub spans the pinned stretch plus the viewport where the
+            // section slides in over the grid. Created before the pin with a
+            // higher refreshPriority so its scroll range is measured WITHOUT
+            // the pin's spacing — otherwise the range shifts by the pin
+            // distance and can never finish. Scrub smoothing is generous so
+            // fast scrolling still plays the morph out instead of skipping it.
             const proxy = { p: 0 }
             const tl = gsap.timeline({
                 scrollTrigger: {
                     trigger: heroSelector,
                     start: 'top top',
-                    end: '+=200%',
-                    scrub: 0.6,
+                    end: `+=${TOTAL_VH * 100}%`,
+                    scrub: 1,
                     refreshPriority: 1,
                 },
             })
@@ -107,11 +118,11 @@ export default function NetworkToDotGrid({
                 tl.to(reveal, { opacity: 1, duration: 0.05, ease: 'none' }, 0.95)
             }
 
-            // Pin the hero for one viewport of scroll while the morph plays.
+            // Pin the hero while the bulk of the morph plays.
             const pin = ScrollTrigger.create({
                 trigger: heroSelector,
                 start: 'top top',
-                end: '+=100%',
+                end: `+=${PIN_VH * 100}%`,
                 pin: true,
                 pinSpacing: true,
                 anticipatePin: 1,

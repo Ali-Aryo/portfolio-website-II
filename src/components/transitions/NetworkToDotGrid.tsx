@@ -18,8 +18,8 @@ gsap.registerPlugin(ScrollTrigger)
 //   .. PIN_VH + 1          section covers the grid; crossfade in the last 5%
 // The pin is generous so a normal-speed scroll can't blow past the morph.
 const EXIT_VH = 0.3
-const PIN_VH = 2  //animation speed
-const MORPH_END_VH = 2.4 //make this greater than PIN_VH
+const PIN_VH = 10  //animation speed
+const MORPH_END_VH = 12 //make this greater than PIN_VH
 const TOTAL_VH = PIN_VH + 1
 // Same phases as fractions of the scrub timeline.
 const HERO_EXIT = EXIT_VH / TOTAL_VH
@@ -152,7 +152,7 @@ export default function NetworkToDotGrid({
             ref={overlayRef}
             className="pointer-events-none fixed inset-0 z-30 hidden md:block"
         >
-            <NeuralNetwork ref={networkRef} originX={NETWORK_REST_X} fitFraction={0.5} />
+            <NeuralNetwork ref={networkRef} originX={NETWORK_REST_X} fitFraction={0.4} />
         </div>
     )
 }

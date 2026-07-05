@@ -3,6 +3,9 @@ import * as THREE from 'three'
 import { cn } from '@/lib/utils'
 import { DOT_GRID_DEFAULTS } from '@/lib/dotGridLayout'
 import { computeMorphLayout } from '@/lib/morphTargets'
+import { createGlowTexture } from '@/lib/glowTexture'
+import { createGlowPointsMaterial } from '@/lib/glowPointsMaterial'
+import { AmbientParticles } from './AmbientParticles'
 
 export type NeuralNetworkHandle = {
     /**
@@ -29,6 +32,10 @@ type NeuralNetworkProps = {
     glowColor?: string
     /** Number of nodes in the network. */
     nodeCount?: number
+    /** Ambient atmosphere motes drifting around the network. */
+    particleCount?: number
+    /** Average seconds between neural firing events. */
+    fireInterval?: number
     /** Max distance between two nodes for a connection to form. */
     connectionDistance?: number
     /** How far the whole network tilts toward the cursor, in radians. */
@@ -57,6 +64,12 @@ type NodeData = {
     pull: THREE.Vector3
     baseColor: THREE.Color
     glow: number
+    /** Neural-firing flash, 1 -> 0 decay. */
+    fire: number
+    /** Per-node rhythm offset for the breathing scale. */
+    phase: number
+    /** Indices into `pairs` of the connections touching this node. */
+    edges: number[]
     /** Explode-phase direction and travel distance. */
     explodeDir: THREE.Vector3
     explodeDist: number
@@ -78,13 +91,17 @@ type Filler = {
 type Connection = { a: number; b: number }
 
 type Pulse = {
-    mesh: THREE.Mesh
+    sprite: THREE.Sprite
     connection: Connection | null
+    /** Travel direction: true = a -> b. Firing nodes emit outward. */
+    fromA: boolean
     progress: number
     speed: number
 }
 
 const NODE_RADIUS = 0.04
+/** Halo diameter in world units at rest (scales with glow/firing). */
+const HALO_SIZE = 1.0
 /** World diameter the camera must keep in frame (cloud + drift + pull). */
 const NETWORK_DIAMETER = 8.2
 /** Morph phase boundaries: explode finishes at 0.3, reform fills 0.3..1. */
@@ -96,15 +113,16 @@ const smoothstep = (t: number) => {
 }
 
 /**
- * A sci-fi neural network: drifting nodes on a spherical cloud, linked by
- * glowing connections that carry data pulses. The whole network tilts toward
- * the cursor, and nodes near the cursor brighten, swell, and get gently
- * attracted while their connections light up.
+ * A sci-fi neural network: breathing glow nodes on a spherical cloud inside
+ * a drifting particle nebula, linked by shimmering connections that carry
+ * light pulses. Nodes randomly "fire" — flashing and emitting pulses down
+ * their edges — the whole network tilts toward the cursor, and nodes near
+ * the cursor brighten, swell, and get gently attracted.
  *
  * Via the `setMorph` ref handle the network can explode apart and reform as
- * a flat dot grid. The nodes land on a spread subset of the lattice while
- * filler dots materialize on every remaining cell, so at morph = 1 the
- * result is dot-for-dot identical to the DotGrid component.
+ * a flat dot grid: halos, lines, pulses, and atmosphere dissolve in the
+ * blast, and the node cores (plus lattice fillers) land dot-for-dot on the
+ * DotGrid component's grid.
  *
  * Renders on a transparent canvas that fills its parent, so the parent must
  * have a real height.
@@ -114,7 +132,9 @@ export default function NeuralNetwork({
     accentColor = '#00f2ff',
     pulseColor = '#ffffff',
     glowColor = '#ffffff',
-    nodeCount = 120,
+    nodeCount = 400,
+    particleCount = 4000,
+    fireInterval = 0.3,
     connectionDistance = 1.8,
     mouseFollow = 0.4,
     interactionRadius = 1.6,
@@ -163,8 +183,11 @@ export default function NeuralNetwork({
         const group = new THREE.Group()
         scene.add(group)
 
+        const glowTex = createGlowTexture()
+
         // --- Nodes: positions on a jittered fibonacci sphere so the cloud
-        // reads as organic rather than gridded.
+        // reads as organic rather than gridded. Slight per-node hue/lightness
+        // variation keeps the palette from looking flat.
         const nodes: NodeData[] = []
         for (let i = 0; i < nodeCount; i++) {
             const phi = Math.acos(-1 + (2 * i) / nodeCount)
@@ -186,8 +209,13 @@ export default function NeuralNetwork({
                     (Math.random() - 0.5) * 0.005,
                 ),
                 pull: new THREE.Vector3(),
-                baseColor: Math.random() > 0.8 ? accent : primary,
+                baseColor: (Math.random() > 0.8 ? accent : primary)
+                    .clone()
+                    .offsetHSL((Math.random() - 0.5) * 0.05, 0, (Math.random() - 0.5) * 0.1),
                 glow: 0,
+                fire: 0,
+                phase: Math.random() * Math.PI * 2,
+                edges: [],
                 explodeDir: position
                     .clone()
                     .normalize()
@@ -205,9 +233,9 @@ export default function NeuralNetwork({
             })
         }
 
-        // --- Instanced mesh holding the nodes AND the morph filler dots.
-        // Capacity depends on how many lattice cells the viewport has, so it
-        // is (re)allocated from updateViewport.
+        // --- Instanced mesh holding the node cores AND the morph filler
+        // dots. Capacity depends on how many lattice cells the viewport has,
+        // so it is (re)allocated from updateViewport.
         const nodeGeom = new THREE.SphereGeometry(NODE_RADIUS, 12, 12)
         const nodeMat = new THREE.MeshBasicMaterial()
         let nodeMesh: THREE.InstancedMesh | null = null
@@ -224,6 +252,53 @@ export default function NeuralNetwork({
             nodeMesh.frustumCulled = false
             group.add(nodeMesh)
         }
+
+        // --- Halo layer: one soft additive glow sprite per node, breathing
+        // and flaring with cursor glow / firing, gone by the time the grid
+        // forms so only the crisp cores remain.
+        const haloPositions = new Float32Array(nodeCount * 3)
+        const haloSizes = new Float32Array(nodeCount)
+        const haloAlphas = new Float32Array(nodeCount)
+        const haloColors = new Float32Array(nodeCount * 3)
+        {
+            const tint = new THREE.Color()
+            for (let i = 0; i < nodeCount; i++) {
+                tint.copy(nodes[i].baseColor).lerp(new THREE.Color('#ffffff'), 0.15)
+                haloColors[i * 3] = tint.r
+                haloColors[i * 3 + 1] = tint.g
+                haloColors[i * 3 + 2] = tint.b
+            }
+        }
+        const haloGeom = new THREE.BufferGeometry()
+        haloGeom.setAttribute(
+            'position',
+            new THREE.BufferAttribute(haloPositions, 3).setUsage(THREE.DynamicDrawUsage),
+        )
+        haloGeom.setAttribute(
+            'aSize',
+            new THREE.BufferAttribute(haloSizes, 1).setUsage(THREE.DynamicDrawUsage),
+        )
+        haloGeom.setAttribute(
+            'aAlpha',
+            new THREE.BufferAttribute(haloAlphas, 1).setUsage(THREE.DynamicDrawUsage),
+        )
+        haloGeom.setAttribute('aColor', new THREE.BufferAttribute(haloColors, 3))
+        const haloMat = createGlowPointsMaterial(glowTex)
+        const halos = new THREE.Points(haloGeom, haloMat)
+        halos.frustumCulled = false
+        group.add(halos)
+
+        // --- Ambient atmosphere: the nebula of drifting motes.
+        const particles = new AmbientParticles({
+            count: particleCount,
+            innerRadius: 0.4,
+            outerRadius: 6.4,
+            baseColor: primary,
+            accentColor: accent,
+            accentRatio: 0.1,
+            texture: glowTex,
+        })
+        group.add(particles.points)
 
         // Sizes the canvas, fits the camera (respecting originX/fitFraction),
         // and recomputes the pixel-aligned lattice: node targets plus filler
@@ -244,6 +319,12 @@ export default function NeuralNetwork({
             )
             camera.updateProjectionMatrix()
             renderer.setSize(w, h)
+
+            // Point-sprite sizes are in world units; see glowPointsMaterial.
+            const pixelScale =
+                (h * renderer.getPixelRatio()) / (2 * Math.tan(halfFov))
+            haloMat.uniforms.uPixelScale.value = pixelScale
+            particles.setPixelScale(pixelScale)
 
             const worldPerPixel = (2 * camera.position.z * Math.tan(halfFov)) / h
             restOffsetX = w * worldPerPixel * (originX - 0.5)
@@ -295,15 +376,21 @@ export default function NeuralNetwork({
         updateViewport()
 
         // --- Connections: every close-enough node pair shares one edge in a
-        // single LineSegments buffer; per-vertex colors let edges light up
-        // near the cursor without extra draw calls.
+        // single LineSegments buffer; per-vertex colors let edges shimmer and
+        // light up near the cursor without extra draw calls.
         const pairs: Connection[] = []
         for (let i = 0; i < nodeCount; i++) {
             for (let j = i + 1; j < nodeCount; j++) {
                 const dist = nodes[i].position.distanceTo(nodes[j].position)
-                if (dist < connectionDistance) pairs.push({ a: i, b: j })
+                if (dist < connectionDistance) {
+                    nodes[i].edges.push(pairs.length)
+                    nodes[j].edges.push(pairs.length)
+                    pairs.push({ a: i, b: j })
+                }
             }
         }
+        const pairPhases = new Float32Array(pairs.length)
+        for (let k = 0; k < pairs.length; k++) pairPhases[k] = Math.random() * Math.PI * 2
 
         const linePositions = new Float32Array(pairs.length * 6)
         const lineColors = new Float32Array(pairs.length * 6)
@@ -327,27 +414,43 @@ export default function NeuralNetwork({
         lines.frustumCulled = false
         group.add(lines)
 
-        // --- Data pulses: a small pool of glowing dots that pick a random
-        // connection, travel along it, then go dormant until respawned.
-        const pulseGeom = new THREE.SphereGeometry(0.05, 8, 8)
-        const pulseMat = new THREE.MeshBasicMaterial({
+        // --- Data pulses: a pool of glow sprites that travel along
+        // connections. Firing nodes emit them outward down their own edges;
+        // a few also spawn ambiently.
+        const pulseMat = new THREE.SpriteMaterial({
+            map: glowTex,
             color: pulseColor,
             transparent: true,
-            opacity: 0.9,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
         })
         const pulses: Pulse[] = []
-        for (let i = 0; i < 25; i++) {
-            const mesh = new THREE.Mesh(pulseGeom, pulseMat)
-            mesh.visible = false
-            group.add(mesh)
+        for (let i = 0; i < 40; i++) {
+            const sprite = new THREE.Sprite(pulseMat)
+            sprite.visible = false
+            sprite.scale.setScalar(0.001)
+            group.add(sprite)
             pulses.push({
-                mesh,
+                sprite,
                 connection: null,
+                fromA: true,
                 progress: 0,
                 speed: 0.02 + Math.random() * 0.04,
             })
+        }
+        const spawnPulse = (connection: Connection, fromA: boolean) => {
+            const p = pulses.find((p) => !p.connection)
+            if (!p) return
+            p.connection = connection
+            p.fromA = fromA
+            p.progress = 0
+            // Place and size the sprite NOW: it renders this frame, and the
+            // travel loop only repositions it on the next one. Without this
+            // it flashes once at its stale position (initially the center).
+            const start = fromA ? nodes[connection.a] : nodes[connection.b]
+            p.sprite.position.copy(start.renderPos)
+            p.sprite.scale.setScalar(0.14 * 0.5)
+            p.sprite.visible = true
         }
 
         // --- Cursor tracking: window-relative for the tilt, container-relative
@@ -378,12 +481,16 @@ export default function NeuralNetwork({
         let rotY = 0
         let rotZ = 0
         let fillersWereActive = false
+        let fireCooldown = fireInterval * (0.5 + Math.random())
 
+        const clock = new THREE.Clock()
         let frameId = 0
         const animate = () => {
             frameId = requestAnimationFrame(animate)
             const mesh = nodeMesh!
 
+            const dt = Math.min(clock.getDelta(), 0.05)
+            const time = clock.elapsedTime
             const m = morphRef.current
             const live = 1 - m
             const rotationKill = smoothstep((m - EXPLODE_END) / 0.5)
@@ -409,6 +516,23 @@ export default function NeuralNetwork({
                 .copy(raycaster.ray)
                 .applyMatrix4(groupInverse.copy(group.matrixWorld).invert())
 
+            // Neural firing: a random node flashes and emits pulses down its
+            // connections. Quiet while morphing or under reduced motion.
+            fireCooldown -= dt
+            if (fireCooldown <= 0) {
+                fireCooldown = fireInterval * (0.6 + Math.random() * 0.8)
+                if (!prefersReducedMotion && m < 0.05) {
+                    const idx = Math.floor(Math.random() * nodeCount)
+                    const node = nodes[idx]
+                    node.fire = 1
+                    const offset = Math.floor(Math.random() * Math.max(1, node.edges.length))
+                    for (let e = 0; e < Math.min(3, node.edges.length); e++) {
+                        const pair = pairs[node.edges[(offset + e) % node.edges.length]]
+                        spawnPulse(pair, pair.a === idx)
+                    }
+                }
+            }
+
             const explodeT = Math.min(1, m / EXPLODE_END)
             const explodeEase = explodeT * (2 - explodeT)
 
@@ -430,6 +554,9 @@ export default function NeuralNetwork({
                 const influence =
                     smoothstep(1 - dist / interactionRadius) * live
                 node.glow += (influence - node.glow) * 0.12
+                node.fire *= Math.exp(-3.5 * dt)
+                // Combined brightness from cursor glow and neural firing.
+                const energy = Math.min(1, node.glow + node.fire)
 
                 // Gentle attraction toward the cursor that springs back.
                 pullTarget.copy(rayPoint).sub(node.position).multiplyScalar(0.2 * node.glow)
@@ -450,9 +577,14 @@ export default function NeuralNetwork({
                     node.renderPos.lerp(node.target, reformT)
                 }
 
-                // Swell a touch while exploding, settle at grid-dot size.
+                // Breathe at rest, swell while exploding, settle at grid size.
+                const breathe = prefersReducedMotion
+                    ? 1
+                    : 1 + 0.09 * Math.sin(time * 1.7 + node.phase) * live
                 const liveScale =
-                    (1 + node.glow * 1.8) * (1 + explodeEase * 0.5 * (1 - reformT))
+                    (1 + node.glow * 1.8 + node.fire * 0.5) *
+                    breathe *
+                    (1 + explodeEase * 0.5 * (1 - reformT))
                 const s = liveScale + (gridScale - liveScale) * reformT
                 tmpMat.makeScale(s, s, s).setPosition(node.renderPos)
                 mesh.setMatrixAt(i, tmpMat)
@@ -460,10 +592,26 @@ export default function NeuralNetwork({
                 // Spark bright while exploding, then adopt the grid color.
                 tmpColor
                     .copy(node.baseColor)
-                    .lerp(glowCol, node.glow * 0.9 + explodeEase * (1 - reformT) * 0.4)
+                    .lerp(glowCol, energy * 0.85 + explodeEase * (1 - reformT) * 0.4)
                     .lerp(gridCol, reformT)
                 mesh.setColorAt(i, tmpColor)
+
+                // Halo mirrors the core: flares with energy and the blast,
+                // fully dissolved once the node settles on the lattice.
+                const o = i * 3
+                haloPositions[o] = node.renderPos.x
+                haloPositions[o + 1] = node.renderPos.y
+                haloPositions[o + 2] = node.renderPos.z
+                haloSizes[i] =
+                    HALO_SIZE *
+                    breathe *
+                    (1 + energy * 0.9 + explodeEase * 0.5) *
+                    (1 - reformT)
+                haloAlphas[i] = (0.20 + energy * 0.10) * (1 - reformT)
             }
+            haloGeom.attributes.position.needsUpdate = true
+            haloGeom.attributes.aSize.needsUpdate = true
+            haloGeom.attributes.aAlpha.needsUpdate = true
 
             // Filler dots materialize on the remaining lattice cells during
             // the reform, completing the grid. One extra pass zeroes them
@@ -484,8 +632,12 @@ export default function NeuralNetwork({
             mesh.instanceMatrix.needsUpdate = true
             if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
 
-            // Connections fade out early in the morph; skip the buffer writes
-            // entirely once they are invisible.
+            // Atmosphere drifts, twinkles, and blows apart with the morph.
+            particles.update(time, m, prefersReducedMotion)
+
+            // Connections shimmer slowly and light up with endpoint energy;
+            // they fade out early in the morph, and the buffer writes are
+            // skipped entirely once invisible.
             lineMat.opacity = 0.6 * Math.max(0, 1 - m / EXPLODE_END)
             lines.visible = lineMat.opacity > 0.001
             if (lines.visible) {
@@ -501,11 +653,21 @@ export default function NeuralNetwork({
                     linePositions[o + 4] = nb.renderPos.y
                     linePositions[o + 5] = nb.renderPos.z
 
-                    tmpColor.copy(na.baseColor).multiplyScalar(0.22 + na.glow * 0.78)
+                    const shimmer = prefersReducedMotion
+                        ? 0.06
+                        : 0.06 * (1 + Math.sin(time * 0.9 + pairPhases[k]))
+                    const energyA = Math.min(1, na.glow + na.fire)
+                    const energyB = Math.min(1, nb.glow + nb.fire)
+
+                    tmpColor
+                        .copy(na.baseColor)
+                        .multiplyScalar(Math.min(1, 0.16 + shimmer + energyA * 0.65))
                     lineColors[o] = tmpColor.r
                     lineColors[o + 1] = tmpColor.g
                     lineColors[o + 2] = tmpColor.b
-                    tmpColor.copy(nb.baseColor).multiplyScalar(0.22 + nb.glow * 0.78)
+                    tmpColor
+                        .copy(nb.baseColor)
+                        .multiplyScalar(Math.min(1, 0.16 + shimmer + energyB * 0.65))
                     lineColors[o + 3] = tmpColor.r
                     lineColors[o + 4] = tmpColor.g
                     lineColors[o + 5] = tmpColor.b
@@ -514,27 +676,35 @@ export default function NeuralNetwork({
                 lineGeom.attributes.color.needsUpdate = true
             }
 
+            // Ambient pulse spawning (throttled; firing spawns the rest).
+            if (!prefersReducedMotion && m < 0.05 && Math.random() < 0.3) {
+                spawnPulse(
+                    pairs[Math.floor(Math.random() * pairs.length)],
+                    Math.random() < 0.5,
+                )
+            }
             for (const p of pulses) {
-                if (!p.connection) {
-                    if (!prefersReducedMotion && m < 0.05 && Math.random() < 0.04) {
-                        p.connection = pairs[Math.floor(Math.random() * pairs.length)]
-                        p.progress = 0
-                        p.mesh.visible = true
-                    }
-                } else if (m > EXPLODE_END) {
+                if (!p.connection) continue
+                if (m > EXPLODE_END) {
                     p.connection = null
-                    p.mesh.visible = false
+                    p.sprite.visible = false
                 } else {
                     p.progress += p.speed
                     if (p.progress >= 1) {
                         p.connection = null
-                        p.mesh.visible = false
+                        p.sprite.visible = false
                     } else {
                         const na = nodes[p.connection.a]
                         const nb = nodes[p.connection.b]
-                        p.mesh.position.lerpVectors(na.renderPos, nb.renderPos, p.progress)
+                        if (p.fromA) {
+                            p.sprite.position.lerpVectors(na.renderPos, nb.renderPos, p.progress)
+                        } else {
+                            p.sprite.position.lerpVectors(nb.renderPos, na.renderPos, p.progress)
+                        }
                         // Swell mid-flight so pulses fade in and out.
-                        p.mesh.scale.setScalar(0.6 + Math.sin(p.progress * Math.PI) * 0.8)
+                        p.sprite.scale.setScalar(
+                            0.14 * (0.5 + Math.sin(p.progress * Math.PI) * 0.9),
+                        )
                     }
                 }
             }
@@ -553,10 +723,13 @@ export default function NeuralNetwork({
             nodeMesh?.dispose()
             nodeGeom.dispose()
             nodeMat.dispose()
+            haloGeom.dispose()
+            haloMat.dispose()
+            particles.dispose()
             lineGeom.dispose()
             lineMat.dispose()
-            pulseGeom.dispose()
             pulseMat.dispose()
+            glowTex.dispose()
             renderer.dispose()
             container.removeChild(renderer.domElement)
         }
@@ -566,6 +739,8 @@ export default function NeuralNetwork({
         pulseColor,
         glowColor,
         nodeCount,
+        particleCount,
+        fireInterval,
         connectionDistance,
         mouseFollow,
         interactionRadius,

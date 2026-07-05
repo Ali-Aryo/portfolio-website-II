@@ -83,8 +83,15 @@ type NodeData = {
  *  cell the network nodes don't cover, completing the grid. */
 type Filler = {
     target: THREE.Vector3
+    /** True: bursts outward from the blast center like the real nodes.
+     *  False: pops in independently, in place, at a random moment. */
+    isShockwave: boolean
+    /** Jittered near-center point a shockwave filler flies out from.
+     *  Unused (equals target) for non-shockwave fillers. */
+    start: THREE.Vector3
     stagger: number
-    /** Starting z (toward the camera) it settles in from. */
+    /** Starting z (toward the camera) a non-shockwave filler settles in
+     *  from. */
     zFrom: number
 }
 
@@ -106,6 +113,11 @@ const HALO_SIZE = 1.0
 const NETWORK_DIAMETER = 8.2
 /** Morph phase boundaries: explode finishes at 0.3, reform fills 0.3..1. */
 const EXPLODE_END = 0.3
+/** Fraction of lattice-filling dots swept outward by the shockwave (vs.
+ *  popping in independently, in place, at a random moment). */
+const FILLER_SHOCKWAVE_RATIO = 0.7
+/** Radius of the cluster shockwave-driven fillers appear to burst from. */
+const FILLER_BLAST_JITTER = 0.6
 
 const smoothstep = (t: number) => {
     const x = Math.min(1, Math.max(0, t))
@@ -344,14 +356,30 @@ export default function NeuralNetwork({
             for (let i = 0; i < nodeCount; i++) {
                 nodes[i].target.copy(layout.nodeTargets[i])
             }
-            // Center-out stagger (targets are pre-sorted) with jitter, so the
-            // grid materializes outward from the middle, like the nodes.
+            // Most fillers burst outward from the blast center like the real
+            // nodes, rippling out in the same center-out order as the
+            // targets are pre-sorted; the rest ignore position entirely and
+            // pop in independently, so the grid doesn't read as one uniform
+            // wave sweeping from the middle.
             const lastIdx = Math.max(1, layout.fillerTargets.length - 1)
-            fillers = layout.fillerTargets.map((target, i) => ({
-                target,
-                stagger: (i / lastIdx) * 0.75 + Math.random() * 0.25,
-                zFrom: 0.5 + Math.random() * 1.5,
-            }))
+            fillers = layout.fillerTargets.map((target, i) => {
+                const isShockwave = Math.random() < FILLER_SHOCKWAVE_RATIO
+                return {
+                    target,
+                    isShockwave,
+                    start: isShockwave
+                        ? new THREE.Vector3(
+                              (Math.random() - 0.5) * FILLER_BLAST_JITTER,
+                              (Math.random() - 0.5) * FILLER_BLAST_JITTER,
+                              (Math.random() - 0.5) * FILLER_BLAST_JITTER,
+                          )
+                        : target.clone(),
+                    stagger: isShockwave
+                        ? (i / lastIdx) * 0.75 + Math.random() * 0.25
+                        : Math.random(),
+                    zFrom: 0.5 + Math.random() * 1.5,
+                }
+            })
 
             const total = nodeCount + fillers.length
             ensureCapacity(total)
@@ -613,9 +641,11 @@ export default function NeuralNetwork({
             haloGeom.attributes.aSize.needsUpdate = true
             haloGeom.attributes.aAlpha.needsUpdate = true
 
-            // Filler dots materialize on the remaining lattice cells during
-            // the reform, completing the grid. One extra pass zeroes them
-            // when the morph snaps back to 0.
+            // Filler dots complete the grid during the reform. Most fly out
+            // from the blast center to their lattice cell, like a physical
+            // shockwave placing them; the rest just pop in at their fixed
+            // position at an independent random moment. One extra pass
+            // zeroes them all when the morph snaps back to 0.
             const fillersActive = m > 0
             if (fillersActive || fillersWereActive) {
                 for (let i = 0; i < fillers.length; i++) {
@@ -623,7 +653,12 @@ export default function NeuralNetwork({
                     const t = smoothstep((m - EXPLODE_END - f.stagger * 0.2) / 0.5)
                     const s = gridScale * t
                     tmpMat.makeScale(s, s, s)
-                    tmpMat.setPosition(f.target.x, f.target.y, f.zFrom * (1 - t))
+                    if (f.isShockwave) {
+                        exploded.lerpVectors(f.start, f.target, t)
+                        tmpMat.setPosition(exploded)
+                    } else {
+                        tmpMat.setPosition(f.target.x, f.target.y, f.zFrom * (1 - t))
+                    }
                     mesh.setMatrixAt(nodeCount + i, tmpMat)
                 }
             }

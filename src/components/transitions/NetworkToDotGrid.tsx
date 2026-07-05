@@ -8,22 +8,43 @@ import NeuralNetwork, {
 gsap.registerPlugin(ScrollTrigger)
 
 // Scroll geometry, measured in viewport-heights of scrolling:
-//   0 .. EXIT_VH           hero content slides up / background fades, while
-//                          the network glides from its resting spot to center
+//   0 .. EXIT_VH             hero content slides up / background fades, while
+//                            the network glides from its resting spot to center
 //   EXIT_VH .. MORPH_END_VH  network explodes and reforms into the grid
-//   PIN_VH                 the hero unpins here — deliberately BEFORE the
-//                          morph ends, so the last dots are still raining in
-//                          while the next section starts sliding up (keeps
-//                          the settled-grid lull short)
-//   .. PIN_VH + 1          section covers the grid; crossfade in the last 5%
-// The pin is generous so a normal-speed scroll can't blow past the morph.
+//   PIN_VH                   the hero unpins here (must be <= MORPH_END_VH):
+//                            the next section scrolls up and immediately
+//                            pins in turn, so the last dots keep raining in
+//                            over it without it scrolling away
+//   MORPH_END_VH .. +SETTLE_VH   grid sits fully formed and motionless, so
+//                            the handoff never catches a dot mid-flight
+//   +REVEAL_VH               crossfade into the real DotGrid; the next
+//                            section then unpins and normal scrolling resumes
+// TOTAL_VH is derived from MORPH_END_VH (not just PIN_VH) specifically so
+// retuning PIN_VH/MORPH_END_VH can't silently push the morph's end past the
+// scrollable range. The next section is pinned for exactly the remaining
+// tail (NEXT_SECTION_PIN_VH) so that range always physically exists — a
+// hero-only pin would leave the scrub with nowhere to scroll TO, and it
+// would asymptote short of 100% with the crossfade never firing at all.
 const EXIT_VH = 0.3
-const PIN_VH = 10  //animation speed
-const MORPH_END_VH = 12 //make this greater than PIN_VH
-const TOTAL_VH = PIN_VH + 1
+const PIN_VH = 8  //animation speed
+const MORPH_END_VH = 8.5//make this greater than PIN_VH
+/** Extra scroll, after the last dot lands, before the crossfade starts —
+ *  gives the grid a beat fully at rest. Raise this if it still feels early. */
+const SETTLE_VH = 1
+/** Scroll-heights for the crossfade itself plus the section finishing its
+ *  scroll into view afterward. */
+const REVEAL_VH = 1
+const TOTAL_VH = MORPH_END_VH + SETTLE_VH + REVEAL_VH
 // Same phases as fractions of the scrub timeline.
 const HERO_EXIT = EXIT_VH / TOTAL_VH
 const MORPH_END = MORPH_END_VH / TOTAL_VH
+/** Crossfade start: once the grid has already been fully settled for
+ *  SETTLE_VH, not a fixed fraction of the scrub. */
+const HANDOFF_START = (MORPH_END_VH + SETTLE_VH) / TOTAL_VH
+const HANDOFF_DURATION = REVEAL_VH / TOTAL_VH
+/** How long the NEXT section must stay pinned, after it reaches the top,
+ *  for the scrub above to have enough real scroll room to ever finish. */
+const NEXT_SECTION_PIN_VH = TOTAL_VH - PIN_VH
 /** Resting horizontal center of the network, as a fraction of the viewport. */
 const NETWORK_REST_X = 0.65
 
@@ -32,17 +53,20 @@ type NetworkToDotGridProps = {
     heroSelector?: string
     /** Selector of the next section's DotGrid wrapper, revealed at handoff. */
     revealSelector?: string
+    /** Selector of the whole next section. Pinned for the scrub's tail so
+     *  there's always enough real scroll room for it to reach 100%, and so
+     *  the section can't scroll out of view before the handoff reveals it. */
+    nextSectionSelector?: string
 }
 
 /**
  * Scroll transition between the hero and the next section.
  *
  * Renders the NeuralNetwork on a fixed, full-viewport overlay (over the
- * hero's right half at rest). Scrolling pins the hero for one viewport while
- * the network explodes and reforms into a dot grid; the next section then
- * slides in underneath, and at the boundary the overlay crossfades into the
- * section's real, interactive DotGrid — whose lattice the morph targets
- * match exactly.
+ * hero's right half at rest). Scrolling pins the hero while the network
+ * explodes and reforms into a dot grid; once the grid has sat fully
+ * settled for a beat, the overlay crossfades into the next section's real,
+ * interactive DotGrid — whose lattice the morph targets match exactly.
  *
  * Desktop-only (md+); on mobile the overlay is hidden and the DotGrid is
  * simply visible. Scrubbing back up reverses everything.
@@ -50,6 +74,7 @@ type NetworkToDotGridProps = {
 export default function NetworkToDotGrid({
     heroSelector = '#hero',
     revealSelector = '[data-morph-reveal]',
+    nextSectionSelector = '#experience',
 }: NetworkToDotGridProps) {
     const overlayRef = useRef<HTMLDivElement>(null)
     const networkRef = useRef<NeuralNetworkHandle>(null)
@@ -111,11 +136,21 @@ export default function NetworkToDotGrid({
             if (heroFade.length) {
                 tl.to(heroFade, { opacity: 0, duration: HERO_EXIT, ease: 'none' }, 0)
             }
-            // Handoff: overlay fades out as the real DotGrid fades in, right
-            // as the next section reaches the top of the viewport.
-            tl.to(overlay, { autoAlpha: 0, duration: 0.05, ease: 'none' }, 0.95)
+            // Handoff: overlay fades out as the real DotGrid fades in, once
+            // the grid has been fully settled for SETTLE_VH — not a fixed
+            // fraction of the scrub, so retuning the morph timing above
+            // can't make this fire early again.
+            tl.to(
+                overlay,
+                { autoAlpha: 0, duration: HANDOFF_DURATION, ease: 'none' },
+                HANDOFF_START,
+            )
             if (reveal) {
-                tl.to(reveal, { opacity: 1, duration: 0.05, ease: 'none' }, 0.95)
+                tl.to(
+                    reveal,
+                    { opacity: 1, duration: HANDOFF_DURATION, ease: 'none' },
+                    HANDOFF_START,
+                )
             }
 
             // Pin the hero while the bulk of the morph plays.
@@ -129,8 +164,31 @@ export default function NetworkToDotGrid({
                 refreshPriority: 0,
             })
 
+            // Then pin the next section for the scrub's remaining tail.
+            // Without this, the scrub's end (TOTAL_VH, driven by
+            // MORPH_END_VH/SETTLE_VH/REVEAL_VH above) can easily exceed the
+            // page's actual scrollable height — the timeline would asymptote
+            // short of 100% and the crossfade would never fire at all. This
+            // both guarantees enough real scroll room exists AND keeps the
+            // section on screen (rather than scrolled away) when the
+            // handoff reveals it.
+            const nextSection = document.querySelector<HTMLElement>(nextSectionSelector)
+            const nextSectionPin =
+                nextSection && NEXT_SECTION_PIN_VH > 0
+                    ? ScrollTrigger.create({
+                        trigger: nextSection,
+                        start: 'top top',
+                        end: `+=${NEXT_SECTION_PIN_VH * 100}%`,
+                        pin: true,
+                        pinSpacing: true,
+                        anticipatePin: 1,
+                        refreshPriority: 0,
+                    })
+                    : null
+
             return () => {
                 pin.kill()
+                nextSectionPin?.kill()
                 tl.scrollTrigger?.kill()
                 tl.kill()
                 networkRef.current?.setMorph(0)
@@ -145,7 +203,7 @@ export default function NetworkToDotGrid({
         })
 
         return () => mm.revert()
-    }, [heroSelector, revealSelector])
+    }, [heroSelector, revealSelector, nextSectionSelector])
 
     return (
         <div

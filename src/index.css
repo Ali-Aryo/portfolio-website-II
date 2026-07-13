@@ -21,3 +21,26 @@ body {
   flex-direction: column;
   background-color: #000000;
 }
+
+/* Pulse rings for the CardFlip front face. Defined globally (not inline in
+   the component) because this is Vite, not Next.js — the component's original
+   `<style jsx>` block is styled-jsx syntax that only works in Next. The
+   `animate-[card-pulse_...]` utilities in card-flip.tsx reference this name.
+   Recolored from the original orange to the site's purple (purple-500). */
+@keyframes card-pulse {
+  0% {
+    transform: scale(2);
+    opacity: 0;
+    box-shadow: 0 0 50px rgba(168, 85, 247, 0.5);
+  }
+  50% {
+    transform: translate(0, -5px) scale(1);
+    opacity: 1;
+    box-shadow: 0 8px 20px rgba(168, 85, 247, 0.5);
+  }
+  100% {
+    transform: translate(0, 5px) scale(0.1);
+    opacity: 0;
+    box-shadow: 0 10px 20px rgba(168, 85, 247, 0);
+  }
+}

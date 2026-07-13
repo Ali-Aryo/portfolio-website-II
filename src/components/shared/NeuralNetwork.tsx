@@ -527,7 +527,8 @@ export default function NeuralNetwork({
                 rotY += (tiltX * mouseFollow - rotY) * 0.05
                 rotX += (tiltY * mouseFollow - rotX) * 0.05
             }
-            rotZ += 0.001 * live
+            // Disable ambient spinning rotation to keep the network stable
+            // rotZ += 0.001 * live
             group.rotation.set(
                 rotX * (1 - rotationKill),
                 rotY * (1 - rotationKill),

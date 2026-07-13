@@ -83,7 +83,21 @@ export default function NetworkToDotGrid({
         const overlay = overlayRef.current
         if (!overlay) return
 
+        // Disable browser scroll restoration to prevent triggers from initializing in a scrolled state
+        if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
+            window.history.scrollRestoration = 'manual'
+        }
+
+        // Reset scroll to top on mount during development to prevent HMR corruption
+        if (import.meta.env.DEV) {
+            window.scrollTo(0, 0)
+        }
+
         const mm = gsap.matchMedia()
+
+        const timer = setTimeout(() => {
+            ScrollTrigger.refresh()
+        }, 100)
 
         mm.add('(min-width: 768px) and (prefers-reduced-motion: no-preference)', () => {
             const reveal = document.querySelector<HTMLElement>(revealSelector)
@@ -202,7 +216,10 @@ export default function NetworkToDotGrid({
             gsap.set(overlay, { autoAlpha: 0 })
         })
 
-        return () => mm.revert()
+        return () => {
+            clearTimeout(timer)
+            mm.revert()
+        }
     }, [heroSelector, revealSelector, nextSectionSelector])
 
     return (

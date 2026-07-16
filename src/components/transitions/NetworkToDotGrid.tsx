@@ -30,10 +30,10 @@ const PIN_VH = 8  //animation speed
 const MORPH_END_VH = 8.5//make this greater than PIN_VH
 /** Extra scroll, after the last dot lands, before the crossfade starts —
  *  gives the grid a beat fully at rest. Raise this if it still feels early. */
-const SETTLE_VH = 1
+const SETTLE_VH = 0.5
 /** Scroll-heights for the crossfade itself plus the section finishing its
  *  scroll into view afterward. */
-const REVEAL_VH = 1
+const REVEAL_VH = 0.5
 const TOTAL_VH = MORPH_END_VH + SETTLE_VH + REVEAL_VH
 // Same phases as fractions of the scrub timeline.
 const HERO_EXIT = EXIT_VH / TOTAL_VH

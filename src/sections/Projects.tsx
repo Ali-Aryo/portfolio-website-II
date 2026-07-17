@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import DotGrid from '../components/reactbits/DotGrid'
+import RotatingText from '../components/reactbits/RotatingText'
 import ProjectCarousel, { type CarouselItem } from '../components/shared/ProjectCarousel'
 import ProjectModal from '../components/shared/ProjectModal'
 import { DOT_GRID_DEFAULTS } from '../lib/dotGridLayout'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const RotatingTextComponent = RotatingText as any
 
 // Placeholder projects — real content lands later. Titled "Temp N" so the
 // carousel shows distinct cards; the descriptions/features cycle three stubs so
@@ -102,12 +106,23 @@ export default function Projects() {
                     <h2 className="text-4xl font-bold tracking-tight text-white sm:text-5xl md:text-6xl">
                         Projects
                     </h2>
-                    {/* Placeholder copy — swap alongside the real projects. */}
-                    <p className="mx-auto mt-5 max-w-lg text-sm text-zinc-400 sm:text-base">
-                        A selection of things I&apos;ve built, from full-stack products to
-                        low-level systems work. Hover a card for the stack behind it, or
-                        open one for the details.
-                    </p>
+                    {/* The "I build ..." rotating line, moved here from the Hero
+                        when it went LUSION-style (name-only). */}
+                    <div className="mt-5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-lg font-medium text-purple-200 sm:text-xl md:text-2xl">
+                        <span>I build</span>
+                        <RotatingTextComponent
+                            texts={['Full-Stack Apps', 'AI Tools', 'Infrastructure', 'Embedded-Systems']}
+                            mainClassName="px-2.5 py-0.5 bg-purple-950/40 text-purple-300 border border-purple-800/40 rounded-lg inline-flex overflow-hidden"
+                            staggerFrom="last"
+                            initial={{ y: "100%", opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            exit={{ y: "-120%", opacity: 0 }}
+                            staggerDuration={0.025}
+                            splitLevelClassName="overflow-hidden"
+                            transition={{ type: "spring", damping: 30, stiffness: 400 }}
+                            rotationInterval={2000}
+                        />
+                    </div>
                 </div>
 
                 <div className="mt-6">

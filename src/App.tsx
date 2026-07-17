@@ -1,5 +1,5 @@
 import Hero from './sections/Hero'
-import Experience from './sections/Experience'
+import Projects from './sections/Projects'
 import HeroMenu from './components/shared/HeroMenu'
 import NetworkToDotGrid from './components/transitions/NetworkToDotGrid'
 
@@ -10,13 +10,15 @@ function App() {
     // anchors the HeroMenu layer.
     <div className="relative min-h-screen w-full">
       <Hero />
-      <Experience />
+      <Projects />
       {/* Menu overlays everything, including the morph overlay — see the
           stacking-context note in HeroMenu. */}
       <HeroMenu />
       {/* Fixed overlay that morphs the hero's neural network into the
-          Experience section's dot grid as you scroll between them. */}
-      <NetworkToDotGrid />
+          Projects section cover's dot grid as you scroll between them.
+          Pins #projects-cover (a 100vh box) so the morph lattice still
+          aligns while the cards below it scroll normally. */}
+      <NetworkToDotGrid nextSectionSelector="#projects-cover" />
     </div>
   )
 }
